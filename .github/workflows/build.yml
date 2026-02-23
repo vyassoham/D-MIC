@@ -5,7 +5,7 @@ jobs:
   build:
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v3
+      - uses: actions/checkout@v4
       
       - name: Install Dependencies
         run: |
@@ -16,10 +16,12 @@ jobs:
           
       - name: Build with Buildozer
         run: |
+          # Create a dummy global config to avoid interaction
+          mkdir -p ~/.buildozer
           buildozer android debug
           
       - name: Upload APK
-        uses: actions/upload-artifact@v3
+        uses: actions/upload-artifact@v4
         with:
           name: dmic-app
           path: bin/*.apk
