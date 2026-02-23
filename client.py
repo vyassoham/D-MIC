@@ -66,12 +66,22 @@ class DMicClientApp(App):
         buffer = [0] * buffer_size
         
         while self.running:
-            recorder.read(buffer, 0, len(buffer))
-            # Convert to bytes and send
-            data = bytes((np.array(buffer, dtype='int16')).tobytes()) if 'np' in globals() else bytes(buffer)
-            try:
-                self.sock.sendto(data, (self.ip, PORT))
-            except: break
+            # Read from native buffer
+            read_count = recorder.read(buffer, 0, len(buffer))
+            if read_count > 0:
+                try:
+                    # Convert to bytes (PCM_16BIT is 2 bytes per sample)
+                    # We use a bytearray for speed
+                    raw_data = bytearray()
+                    for s in buffer[:read_count]:
+                        # Low-level packing of 16-bit short to bytes
+                        raw_data.append(s & 0xff)
+                        raw_data.append((s >> 8) & 0xff)
+                    
+                    self.sock.sendto(bytes(raw_data), (self.ip, PORT))
+                except Exception as e:
+                    print(f"UDP Error: {e}")
+                    break
             
         recorder.stop()
         recorder.release()

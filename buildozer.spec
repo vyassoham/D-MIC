@@ -5,7 +5,7 @@ package.domain = org.soham
 source.dir = .
 source.include_exts = py,png,jpg,kv,atlas
 version = 1.0.0
-requirements = python3,kivy
+requirements = python3,kivy,pyjnius
 
 # Permissions
 android.permissions = RECORD_AUDIO, INTERNET
