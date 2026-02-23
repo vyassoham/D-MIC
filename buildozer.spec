@@ -14,12 +14,13 @@ android.permissions = RECORD_AUDIO, INTERNET
 orientation = portrait
 fullscreen = 1
 
-# Android specific
-android.api = 31
+# Android specific - using stable versions only
+android.api = 33
 android.minapi = 21
-android.sdk = 31
-android.ndk = 23b
+android.ndk = 25b
+android.build_tools_version = 33.0.2
 android.archs = arm64-v8a, armeabi-v7a
+android.accept_sdk_license = True
 
 [buildozer]
 log_level = 2
