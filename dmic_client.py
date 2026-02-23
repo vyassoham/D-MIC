@@ -1,116 +1,173 @@
 """
-D-MIC Client v4 — Pydroid 3 Edition
-=====================================
-Streams phone mic → laptop via UDP.
-Designed SPECIFICALLY for Pydroid 3. NOT Buildozer.
-
-Install in Pydroid 3's pip:
-    pip install kivy pyjnius
+D-MIC v5 — Pydroid 3 BULLETPROOF Edition
+==========================================
+All errors logged to: ~/dmic_log.txt
+If app crashes, check that file for details.
 
 BEFORE RUNNING:
-    Android Settings → Apps → Pydroid 3 → Permissions → Microphone → ALLOW
+   1. pip install kivy pyjnius
+   2. Settings > Apps > Pydroid 3 > Permissions > Microphone > Allow
 
 Developed by Soham
 """
 
-# ══════════════════════════════════════════
-#  STEP 0: Logging helper (before everything)
-# ══════════════════════════════════════════
+# ═══════════════════════════════════════════════════════════════
+# STEP 0: FILE-BASED ERROR LOGGER (before ANY other import)
+#   If the app crashes, check ~/dmic_log.txt on your phone
+# ═══════════════════════════════════════════════════════════════
+import os
 import sys
 
+_LOG_PATH = os.path.join(os.path.expanduser('~'), 'dmic_log.txt')
+
 def log(msg):
-    """Print with flush for Pydroid console visibility."""
-    print(f"[DMIC] {msg}", flush=True)
+    """Write to file AND console. Survives crashes."""
+    line = f"[DMIC] {msg}"
+    try:
+        with open(_LOG_PATH, 'a') as f:
+            f.write(line + '\n')
+    except:
+        pass
+    try:
+        print(line, flush=True)
+    except:
+        pass
 
-log("═══ D-MIC v4 Starting ═══")
-log(f"Python: {sys.version}")
-
-# ══════════════════════════════════════════
-#  STEP 1: Basic imports
-# ══════════════════════════════════════════
-import os
-import struct
-import socket
-import threading
-import time
-import math
-import traceback
-
-log("Basic imports OK")
-
-# ══════════════════════════════════════════
-#  STEP 2: Platform detection (Pydroid-safe)
-# ══════════════════════════════════════════
-IS_ANDROID = False
-HAS_JNIUS  = False
-_context   = None  # Android Context (NOT Activity)
-
+# Clear old log
 try:
-    from jnius import autoclass, cast
-    HAS_JNIUS = True
-    log("jnius imported OK")
+    with open(_LOG_PATH, 'w') as f:
+        f.write(f"=== D-MIC v5 Log ===\n")
+        f.write(f"Python: {sys.version}\n")
+        f.write(f"Platform: {sys.platform}\n\n")
+except:
+    pass
 
-    # Try to get jarray (different pyjnius versions)
+log("══════ D-MIC v5 Starting ══════")
+
+# ═══════════════════════════════════════════════════════════════
+# STEP 1: Basic imports (safe, no Android/Kivy yet)
+# ═══════════════════════════════════════════════════════════════
+try:
+    import struct
+    import socket
+    import threading
+    import time
+    import math
+    import traceback
+    import platform as plat
+    log("Basic imports: OK")
+except Exception as e:
+    log(f"FATAL: Basic import failed: {e}")
+    sys.exit(1)
+
+# ═══════════════════════════════════════════════════════════════
+# STEP 2: Kivy (import BEFORE jnius to avoid JVM conflicts)
+# ═══════════════════════════════════════════════════════════════
+try:
+    # Only set GL backend on Windows. On Android, Kivy auto-detects.
+    if plat.system() == 'Windows':
+        os.environ.setdefault('KIVY_GL_BACKEND', 'angle_sdl2')
+    log(f"OS: {plat.system()}")
+
+    log("Importing Kivy...")
+    from kivy.app import App
+    log("  App OK")
+    from kivy.uix.floatlayout import FloatLayout
+    from kivy.uix.boxlayout import BoxLayout
+    from kivy.uix.label import Label
+    from kivy.uix.textinput import TextInput
+    from kivy.uix.button import Button
+    from kivy.uix.widget import Widget
+    log("  Widgets OK")
+    from kivy.graphics import Color, Ellipse, Line, Rectangle, RoundedRectangle
+    log("  Graphics OK")
+    from kivy.clock import Clock
+    log("  Clock OK")
+    from kivy.core.window import Window
+    log(f"  Window OK (Window={Window})")
+    from kivy.utils import get_color_from_hex
+    from kivy.metrics import dp, sp
+    from kivy.properties import NumericProperty, BooleanProperty
+    log("Kivy: ALL imports OK ✓")
+except Exception as e:
+    log(f"FATAL: Kivy import failed: {e}")
+    traceback.print_exc()
+    # Write to log file too
     try:
-        from jnius import jarray
-        log("jarray imported OK")
-    except ImportError:
-        # Fallback: some pyjnius versions put it elsewhere
+        with open(_LOG_PATH, 'a') as f:
+            traceback.print_exc(file=f)
+    except: pass
+    sys.exit(1)
+
+# ═══════════════════════════════════════════════════════════════
+# STEP 3: jnius — LAZY LOADING (never call autoclass at top level)
+#   All Android API calls happen inside functions, not during import.
+#   This prevents JVM conflicts with Kivy's initialization.
+# ═══════════════════════════════════════════════════════════════
+_jnius_ok = False
+_jarray_fn = None
+
+def _init_jnius():
+    """Initialize jnius lazily. Call this only when needed."""
+    global _jnius_ok, _jarray_fn
+    if _jnius_ok:
+        return True
+    try:
+        from jnius import autoclass, cast
+        log("jnius: autoclass OK")
         try:
-            from jnius.reflect import jarray
-            log("jarray imported from jnius.reflect")
+            from jnius import jarray
+            _jarray_fn = jarray
+            log("jnius: jarray OK")
         except ImportError:
-            jarray = None
-            log("WARNING: jarray not available")
+            log("jnius: jarray not found (will use fallback)")
+        _jnius_ok = True
+        return True
+    except ImportError:
+        log("jnius: NOT available (PC mode)")
+        return False
+    except Exception as e:
+        log(f"jnius: init error: {e}")
+        return False
 
-    # ── Get Android context (Pydroid 3 way) ──
-    # DO NOT use 'from android import mActivity' — that's Buildozer only!
+def _get_context():
+    """Get Android application context. Returns None on PC."""
     try:
-        ActivityThread = autoclass('android.app.ActivityThread')
-        app = ActivityThread.currentApplication()
-        if app is not None:
-            _context = app.getApplicationContext()
-            IS_ANDROID = True
-            log("✓ Android context obtained via ActivityThread")
-        else:
-            log("ActivityThread.currentApplication() returned None")
+        from jnius import autoclass
+        AT = autoclass('android.app.ActivityThread')
+        app = AT.currentApplication()
+        if app:
+            ctx = app.getApplicationContext()
+            log(f"Android context: {ctx}")
+            return ctx
     except Exception as e:
         log(f"Context error: {e}")
+    return None
 
-except ImportError:
-    log("No jnius — running on PC (mock mode)")
+def _is_android():
+    """Check if running on Android."""
+    if plat.system() == 'Linux' and os.path.exists('/system/build.prop'):
+        return True
+    try:
+        _init_jnius()
+        if _jnius_ok:
+            from jnius import autoclass
+            autoclass('android.os.Build')
+            return True
+    except:
+        pass
+    return False
 
-log(f"IS_ANDROID={IS_ANDROID}, HAS_JNIUS={HAS_JNIUS}, context={'YES' if _context else 'NO'}")
+# Detect platform (safe check, no JVM init yet)
+IS_ANDROID = (plat.system() == 'Linux' and
+              (os.path.exists('/system/build.prop') or
+               'android' in sys.platform or
+               'ANDROID_ROOT' in os.environ))
+log(f"IS_ANDROID: {IS_ANDROID}")
 
-# ══════════════════════════════════════════
-#  STEP 3: Kivy setup (before any kivy import)
-# ══════════════════════════════════════════
-# NEVER set ANGLE on Android — it's Windows-only and crashes
-import platform
-if platform.system() == 'Windows':
-    os.environ.setdefault('KIVY_GL_BACKEND', 'angle_sdl2')
-
-log("Importing Kivy...")
-
-from kivy.app import App
-from kivy.uix.floatlayout import FloatLayout
-from kivy.uix.boxlayout import BoxLayout
-from kivy.uix.label import Label
-from kivy.uix.textinput import TextInput
-from kivy.uix.button import Button
-from kivy.uix.widget import Widget
-from kivy.graphics import Color, Ellipse, Line, Rectangle, RoundedRectangle
-from kivy.clock import Clock, mainthread
-from kivy.core.window import Window
-from kivy.utils import get_color_from_hex
-from kivy.metrics import dp, sp
-from kivy.properties import NumericProperty, BooleanProperty
-
-log("Kivy imports OK")
-
-# ══════════════════════════════════════════
-#  Colors
-# ══════════════════════════════════════════
+# ═══════════════════════════════════════════════════════════════
+# Colors
+# ═══════════════════════════════════════════════════════════════
 C_BG     = get_color_from_hex('#0A0A0F')
 C_CARD   = get_color_from_hex('#12121A')
 C_BORDER = get_color_from_hex('#2A2A3E')
@@ -122,213 +179,181 @@ C_ORANGE = get_color_from_hex('#FF9100')
 C_WHITE  = [1, 1, 1, 1]
 C_DIM    = [1, 1, 1, 0.3]
 C_MID    = [1, 1, 1, 0.5]
+log("Colors defined")
 
 
-# ══════════════════════════════════════════
-#  PERMISSION CHECK (Pydroid 3 compatible)
-# ══════════════════════════════════════════
+# ═══════════════════════════════════════════════════════════════
+# PERMISSION CHECKER
+# ═══════════════════════════════════════════════════════════════
 def check_mic_permission():
-    """
-    Check if RECORD_AUDIO is granted.
-    In Pydroid 3, you CANNOT request permissions programmatically.
-    The user must grant it manually:
-        Settings → Apps → Pydroid 3 → Permissions → Microphone
-    """
+    """Check RECORD_AUDIO. User must grant manually in Settings."""
     if not IS_ANDROID:
         return True
-
     try:
-        PackageManager = autoclass('android.content.pm.PackageManager')
-        result = _context.checkSelfPermission('android.permission.RECORD_AUDIO')
-        granted = (result == PackageManager.PERMISSION_GRANTED)
-        log(f"Mic permission: {'GRANTED ✓' if granted else 'DENIED ✗'}")
-        return granted
+        if not _init_jnius():
+            log("Can't check permission (no jnius)")
+            return True  # try anyway
+        from jnius import autoclass
+        ctx = _get_context()
+        if not ctx:
+            log("No context, can't check permission, trying anyway")
+            return True
+        PM = autoclass('android.content.pm.PackageManager')
+        r = ctx.checkSelfPermission('android.permission.RECORD_AUDIO')
+        ok = (r == PM.PERMISSION_GRANTED)
+        log(f"Mic permission: {'GRANTED ✓' if ok else 'DENIED ✗'}")
+        return ok
     except Exception as e:
         log(f"Permission check error: {e}")
-        # If check fails, try anyway — AudioRecord will fail clearly
-        return True  # optimistic, let AudioRecord tell us
+        return True  # try anyway, AudioRecord will fail clearly
 
 
-# ══════════════════════════════════════════
-#  AUDIO ENGINE (Pydroid 3 + jnius)
-# ══════════════════════════════════════════
+# ═══════════════════════════════════════════════════════════════
+# AUDIO ENGINE
+# ═══════════════════════════════════════════════════════════════
 class AudioEngine:
-    """
-    Captures mic via Android AudioRecord through pyjnius.
-    - Tries multiple sample rates for device compatibility
-    - Uses jarray for proper Java short[] interop
-    - Falls back to byte[] if jarray unavailable
-    - Retries on failure
-    """
-
-    # Try these in order — not all devices support 44100
-    SAMPLE_RATES = [44100, 22050, 16000, 8000]
-    NUM_SHORTS   = 1024  # ~23ms at 44100Hz
-    MAX_RETRIES  = 3
+    RATES   = [44100, 22050, 16000, 8000]
+    SHORTS  = 1024
+    RETRIES = 3
 
     def __init__(self):
-        self.streaming  = False
-        self.vu_level   = 0.0
-        self.sample_rate = 0  # will be set during init
-        self._thread    = None
-        self._lock      = threading.Lock()
-        log("AudioEngine created")
+        self.streaming = False
+        self.vu_level  = 0.0
+        self._thread   = None
+        log("AudioEngine: created")
 
     def start(self, ip, port):
-        with self._lock:
-            if self.streaming:
-                log("Already streaming")
-                return
-            self.streaming = True
-
+        if self.streaming:
+            return
+        self.streaming = True
         self._thread = threading.Thread(
-            target=self._safe_run, args=(ip, port),
-            name="DMicAudio", daemon=True
+            target=self._run_safe, args=(ip, port),
+            name="DMIC-Audio", daemon=True
         )
         self._thread.start()
-        log(f"Audio thread started → {ip}:{port}")
 
     def stop(self):
-        log("AudioEngine.stop() called")
+        log("AudioEngine: stopping")
         self.streaming = False
-        t = self._thread
-        if t and t.is_alive():
-            t.join(timeout=3)
-            if t.is_alive():
-                log("WARNING: Audio thread did not stop in time")
+        if self._thread and self._thread.is_alive():
+            self._thread.join(timeout=3)
         self._thread = None
         self.vu_level = 0.0
-        log("AudioEngine stopped")
 
-    def _safe_run(self, ip, port):
+    def _run_safe(self, ip, port):
         try:
-            if IS_ANDROID and HAS_JNIUS:
+            log(f"Audio thread started → {ip}:{port}")
+            if IS_ANDROID and _init_jnius():
                 self._run_android(ip, port)
             else:
                 self._run_mock(ip, port)
         except Exception as e:
-            log(f"FATAL engine error: {e}")
-            traceback.print_exc()
+            log(f"AUDIO FATAL: {e}")
+            try:
+                with open(_LOG_PATH, 'a') as f:
+                    traceback.print_exc(file=f)
+            except: pass
         finally:
             self.streaming = False
             self.vu_level = 0.0
+            log("Audio thread ended")
 
     def _run_android(self, ip, port):
-        log("── Android Audio Engine Starting ──")
-        recorder = None
-        sock = None
+        from jnius import autoclass
 
-        for attempt in range(self.MAX_RETRIES):
+        for attempt in range(self.RETRIES):
+            recorder = None
+            sock = None
             try:
                 if not self.streaming:
                     return
 
-                log(f"Attempt {attempt + 1}/{self.MAX_RETRIES}")
+                log(f"─ Attempt {attempt+1}/{self.RETRIES} ─")
 
-                # ── Load Java classes ──
-                log("Loading Java audio classes...")
-                AudioRecord   = autoclass('android.media.AudioRecord')
-                AudioFormat   = autoclass('android.media.AudioFormat')
-                MediaRecorder = autoclass('android.media.MediaRecorder')
+                AR = autoclass('android.media.AudioRecord')
+                AF = autoclass('android.media.AudioFormat')
+                MR = autoclass('android.media.MediaRecorder')
 
-                CH_MONO = AudioFormat.CHANNEL_IN_MONO
-                PCM16   = AudioFormat.ENCODING_PCM_16BIT
-                MIC_SRC = MediaRecorder.AudioSource.MIC
-                STATE_INIT = AudioRecord.STATE_INITIALIZED
-                log("Java classes loaded ✓")
+                MONO  = AF.CHANNEL_IN_MONO
+                PCM16 = AF.ENCODING_PCM_16BIT
+                MIC   = MR.AudioSource.MIC
+                INIT  = AR.STATE_INITIALIZED
 
                 # ── Find working sample rate ──
                 recorder = None
-                chosen_rate = 0
+                rate_used = 0
 
-                for rate in self.SAMPLE_RATES:
+                for rate in self.RATES:
                     try:
-                        min_buf = AudioRecord.getMinBufferSize(rate, CH_MONO, PCM16)
-                        log(f"  Rate {rate}Hz → minBuf={min_buf}")
-
-                        if min_buf <= 0:
-                            log(f"  Rate {rate}Hz not supported, skipping")
+                        mb = AR.getMinBufferSize(rate, MONO, PCM16)
+                        log(f"  {rate}Hz → minBuf={mb}")
+                        if mb <= 0:
                             continue
 
-                        buf_sz = max(min_buf * 4, 8192)
+                        bsz = max(mb * 4, 8192)
+                        r = AR(MIC, rate, MONO, PCM16, bsz)
+                        s = r.getState()
+                        log(f"  {rate}Hz → state={s}")
 
-                        rec = AudioRecord(MIC_SRC, rate, CH_MONO, PCM16, buf_sz)
-                        state = rec.getState()
-                        log(f"  Rate {rate}Hz → state={state} (need {STATE_INIT})")
-
-                        if state == STATE_INIT:
-                            recorder = rec
-                            chosen_rate = rate
-                            self.sample_rate = rate
-                            log(f"  ✓ Using {rate}Hz, buffer={buf_sz}")
+                        if s == INIT:
+                            recorder = r
+                            rate_used = rate
+                            log(f"  ✓ Using {rate}Hz")
                             break
                         else:
-                            rec.release()
-                            log(f"  ✗ {rate}Hz failed to init")
+                            r.release()
                     except Exception as e:
-                        log(f"  ✗ {rate}Hz error: {e}")
+                        log(f"  {rate}Hz error: {e}")
 
-                if recorder is None:
-                    log("✗ No sample rate worked!")
-                    if attempt < self.MAX_RETRIES - 1:
-                        log(f"Retrying in 2 seconds...")
+                if not recorder:
+                    log("✗ All sample rates failed")
+                    if attempt < self.RETRIES - 1:
+                        log("Retrying in 2s...")
                         time.sleep(2)
                         continue
-                    else:
-                        log("All retries exhausted. Is mic permission granted?")
-                        log("Go to: Settings → Apps → Pydroid 3 → Permissions → Microphone")
-                        return
+                    log("GIVE UP. Check mic permission in Settings.")
+                    return
 
-                # ── UDP Socket ──
-                log(f"Creating UDP socket → {ip}:{port}")
+                # ── UDP ──
+                log(f"UDP → {ip}:{port}")
                 sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
                 addr = (ip, port)
 
-                # Test connectivity
-                try:
-                    sock.sendto(b'\x00\x00', addr)
-                    log("UDP test packet sent ✓")
-                except Exception as e:
-                    log(f"UDP test failed: {e}")
-                    log("Check: phone and laptop on same WiFi?")
-
-                # ── Create read buffer ──
-                n_shorts = self.NUM_SHORTS
+                # ── Buffer ──
                 use_jarray = False
+                java_buf = None
+                n_shorts = self.SHORTS
 
-                if jarray is not None:
+                if _jarray_fn:
                     try:
-                        java_buf = jarray('h')(n_shorts)
+                        java_buf = _jarray_fn('h')(n_shorts)
                         use_jarray = True
-                        log(f"Using jarray('h')({n_shorts}) ✓")
+                        log(f"jarray buffer: {n_shorts} shorts ✓")
                     except Exception as e:
-                        log(f"jarray failed: {e}, using byte[] fallback")
+                        log(f"jarray failed: {e}")
 
                 if not use_jarray:
-                    # Fallback: use byte array
+                    log("Using byte[] fallback")
                     n_bytes = n_shorts * 2
-                    log(f"Using byte[] fallback, size={n_bytes}")
 
-                # ── Start recording ──
-                log("Starting AudioRecord...")
+                # ── Start ──
                 recorder.startRecording()
-                rec_state = recorder.getRecordingState()
-                log(f"Recording state: {rec_state} (3=RECORDING)")
+                rs = recorder.getRecordingState()
+                log(f"RecordingState: {rs} (3=OK)")
 
-                if rec_state != 3:  # RECORDSTATE_RECORDING
-                    log("✗ Recording failed to start!")
-                    recorder.stop()
+                if rs != 3:
+                    log("✗ Failed to start recording")
                     recorder.release()
-                    if attempt < self.MAX_RETRIES - 1:
+                    recorder = None
+                    if attempt < self.RETRIES - 1:
                         time.sleep(2)
                         continue
                     return
 
-                log(f"★ STREAMING @ {chosen_rate}Hz to {ip}:{port} ★")
+                log(f"★ STREAMING {rate_used}Hz → {ip}:{port} ★")
 
-                # ── Main capture loop ──
                 pkt = 0
-                errors = 0
+                errs = 0
 
                 while self.streaming:
                     try:
@@ -337,135 +362,112 @@ class AudioEngine:
                             if n > 0:
                                 data = struct.pack(f'<{n}h', *java_buf[:n])
                                 sock.sendto(data, addr)
-                                # VU (sample every 16th for speed)
-                                peak = 0
-                                for i in range(0, n, 16):
-                                    v = abs(java_buf[i])
-                                    if v > peak: peak = v
-                                self.vu_level = min(1.0, peak / 10000.0)
+                                pk = max(abs(java_buf[i]) for i in range(0, n, max(1, n//16)))
+                                self.vu_level = min(1.0, pk / 10000.0)
                         else:
-                            # Byte array fallback
-                            byte_buf = bytearray(n_bytes)
-                            n = recorder.read(byte_buf, 0, n_bytes)
+                            bb = bytearray(n_bytes)
+                            n = recorder.read(bb, 0, n_bytes)
                             if n > 0:
-                                sock.sendto(bytes(byte_buf[:n]), addr)
-                                # Simple VU from bytes
-                                peak = 0
-                                for i in range(0, min(n, 256), 2):
-                                    s = struct.unpack_from('<h', byte_buf, i)[0]
-                                    v = abs(s)
-                                    if v > peak: peak = v
-                                self.vu_level = min(1.0, peak / 10000.0)
+                                sock.sendto(bytes(bb[:n]), addr)
+                                pk = 0
+                                for i in range(0, min(n, 128), 2):
+                                    v = abs(struct.unpack_from('<h', bb, i)[0])
+                                    if v > pk: pk = v
+                                self.vu_level = min(1.0, pk / 10000.0)
 
                         if n > 0:
                             pkt += 1
-                            errors = 0
+                            errs = 0
                             if pkt <= 5 or pkt % 200 == 0:
-                                log(f"PKT #{pkt} | n={n} | VU={self.vu_level:.2f}")
+                                log(f"PKT #{pkt} VU={self.vu_level:.2f}")
                         elif n == 0:
                             time.sleep(0.002)
                         else:
-                            errors += 1
-                            log(f"Read error: {n} (#{errors})")
-                            if errors > 20:
-                                log("Too many read errors, stopping")
+                            errs += 1
+                            if errs > 20:
+                                log("Too many read errors")
                                 break
                             time.sleep(0.01)
 
-                    except socket.error as se:
-                        log(f"Socket error: {se}")
-                        time.sleep(0.05)
                     except Exception as ex:
-                        log(f"Loop error: {ex}")
+                        log(f"Loop err: {ex}")
                         time.sleep(0.01)
 
-                log(f"Stream ended. Total packets: {pkt}")
-                # Success — don't retry
-                return
+                log(f"Done. {pkt} packets sent.")
+                return  # success, no retry
 
             except Exception as ex:
-                log(f"Attempt {attempt+1} error: {ex}")
+                log(f"Attempt {attempt+1} err: {ex}")
                 traceback.print_exc()
-                if attempt < self.MAX_RETRIES - 1:
+                if attempt < self.RETRIES - 1:
                     time.sleep(2)
-
             finally:
-                # Cleanup this attempt
                 if recorder:
-                    try:
-                        recorder.stop()
-                        recorder.release()
-                        log("AudioRecord released")
+                    try: recorder.stop(); recorder.release()
                     except: pass
-                    recorder = None
                 if sock:
                     try: sock.close()
                     except: pass
-                    sock = None
-
-        log("All attempts finished")
 
     def _run_mock(self, ip, port):
-        """PC mock: sends sine wave for testing."""
-        log(f"Mock stream → {ip}:{port}")
+        log(f"Mock → {ip}:{port}")
         sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
         addr = (ip, port)
-        t = 0
-        pkt = 0
+        t = pkt = 0
         while self.streaming:
-            samples = []
-            for _ in range(1024):
-                v = int(8000 * math.sin(2 * math.pi * 440 * t / 44100))
-                samples.append(struct.pack('<h', max(-32768, min(32767, v))))
-                t += 1
-            try:
-                sock.sendto(b''.join(samples), addr)
-                pkt += 1
+            buf = b''.join(
+                struct.pack('<h', int(8000*math.sin(2*math.pi*440*(t+i)/44100)))
+                for i in range(1024)
+            )
+            t += 1024
+            try: sock.sendto(buf, addr); pkt += 1
             except: pass
-            self.vu_level = 0.3 + 0.2 * math.sin(time.time() * 3)
-            if pkt <= 3 or pkt % 100 == 0:
-                log(f"Mock PKT #{pkt}")
+            self.vu_level = 0.3 + 0.2*math.sin(time.time()*3)
+            if pkt <= 3 or pkt % 100 == 0: log(f"Mock #{pkt}")
             time.sleep(0.023)
         sock.close()
-        self.vu_level = 0.0
-        log(f"Mock ended, {pkt} packets")
+        self.vu_level = 0
 
 
-# ══════════════════════════════════════════
-#  WAKELOCK (uses Application context)
-# ══════════════════════════════════════════
+# ═══════════════════════════════════════════════════════════════
+# WAKELOCK (lazy jnius)
+# ═══════════════════════════════════════════════════════════════
 class WakeLockMgr:
     def __init__(self):
-        self._lock = None
+        self._wl = None
 
     def acquire(self):
-        if not IS_ANDROID or not _context:
+        if not IS_ANDROID:
             return
         try:
-            Context = autoclass('android.content.Context')
-            PowerManager = autoclass('android.os.PowerManager')
+            if not _init_jnius():
+                return
+            from jnius import autoclass, cast
+            ctx = _get_context()
+            if not ctx:
+                return
+            C = autoclass('android.content.Context')
+            PM = autoclass('android.os.PowerManager')
             pm = cast('android.os.PowerManager',
-                       _context.getSystemService(Context.POWER_SERVICE))
-            self._lock = pm.newWakeLock(
-                PowerManager.PARTIAL_WAKE_LOCK, 'dmic:audio')
-            self._lock.acquire()
-            log("✓ WakeLock acquired")
+                       ctx.getSystemService(C.POWER_SERVICE))
+            self._wl = pm.newWakeLock(PM.PARTIAL_WAKE_LOCK, 'dmic:a')
+            self._wl.acquire()
+            log("WakeLock ✓")
         except Exception as e:
-            log(f"WakeLock error (non-fatal): {e}")
+            log(f"WakeLock err (ok): {e}")
 
     def release(self):
-        if self._lock:
-            try:
-                if self._lock.isHeld():
-                    self._lock.release()
-                    log("WakeLock released")
-            except: pass
-            self._lock = None
+        try:
+            if self._wl and self._wl.isHeld():
+                self._wl.release()
+                log("WakeLock released")
+        except: pass
+        self._wl = None
 
 
-# ══════════════════════════════════════════
-#  VU METER WIDGET
-# ══════════════════════════════════════════
+# ═══════════════════════════════════════════════════════════════
+# VU METER (simplified for low RAM)
+# ═══════════════════════════════════════════════════════════════
 class VUMeter(Widget):
     level  = NumericProperty(0.0)
     active = BooleanProperty(False)
@@ -473,342 +475,377 @@ class VUMeter(Widget):
     def __init__(self, **kw):
         super().__init__(**kw)
         self._t = 0
-        self.bind(pos=self.redraw, size=self.redraw,
-                  level=self.redraw, active=self.redraw)
-        Clock.schedule_interval(self._tick, 1/25)
+        self.bind(pos=self._draw, size=self._draw,
+                  level=self._draw, active=self._draw)
+        Clock.schedule_interval(self._tick, 1/20)
 
     def _tick(self, dt):
         self._t += dt * 2
-        self.redraw()
+        self._draw()
 
-    def redraw(self, *_):
-        self.canvas.clear()
-        cx, cy = self.center_x, self.center_y
-        r = min(self.width, self.height) * 0.38
-        if r <= 0:
-            return
+    def _draw(self, *_):
+        try:
+            self.canvas.clear()
+            cx, cy = self.center_x, self.center_y
+            r = min(self.width, self.height) * 0.38
+            if r < 10:
+                return
 
-        with self.canvas:
-            # Glow
-            if self.active and self.level > 0.02:
-                a = self.level
-                Color(
-                    C_CYAN[0]*(1-a) + C_RED[0]*a,
-                    C_CYAN[1]*(1-a) + C_RED[1]*a,
-                    C_CYAN[2]*(1-a) + C_RED[2]*a,
-                    0.08 + a*0.25
-                )
-                gr = r + 25 + a*35
-                Ellipse(pos=(cx-gr, cy-gr), size=(gr*2, gr*2))
+            lv = self.level
+            act = self.active
 
-            # Inner fill
-            if self.active:
-                Color(C_CYAN[0], C_CYAN[1], C_CYAN[2], 0.1 + self.level*0.25)
-            else:
-                Color(1, 1, 1, 0.06 + 0.03 * math.sin(self._t))
-            Ellipse(pos=(cx-r, cy-r), size=(r*2, r*2))
+            with self.canvas:
+                # Glow
+                if act and lv > 0.05:
+                    a = lv
+                    Color(0, 0.9*(1-a)+0.1*a, 1*(1-a), 0.1+a*0.2)
+                    g = r + 20 + a*30
+                    Ellipse(pos=(cx-g, cy-g), size=(g*2, g*2))
 
-            # Ring
-            if self.active:
-                a = self.level
-                Color(
-                    C_CYAN[0]*(1-a)+C_RED[0]*a,
-                    C_CYAN[1]*(1-a)+C_RED[1]*a,
-                    C_CYAN[2]*(1-a)+C_RED[2]*a, 0.85
-                )
-            else:
-                Color(*C_BORDER)
-            Line(circle=(cx, cy, r), width=dp(2))
-
-            # Arc
-            if self.active and self.level > 0.01:
-                a = self.level
-                Color(
-                    C_CYAN[0]*(1-a)+C_RED[0]*a,
-                    C_CYAN[1]*(1-a)+C_RED[1]*a,
-                    C_CYAN[2]*(1-a)+C_RED[2]*a, 0.9
-                )
-                Line(circle=(cx, cy, r+dp(7), 90, 90+a*360), width=dp(3))
-
-            # Segments
-            for i in range(12):
-                sa = i * 30
-                sl = (i+1) / 12
-                if self.active and self.level >= sl:
-                    if sl > 0.8: Color(*C_RED[:3], 0.85)
-                    elif sl > 0.5: Color(1, 0.75, 0, 0.75)
-                    else: Color(*C_CYAN[:3], 0.65)
+                # Circle fill
+                if act:
+                    Color(0, 0.9, 1, 0.08 + lv*0.2)
                 else:
-                    Color(1, 1, 1, 0.04)
-                Line(circle=(cx, cy, r+dp(16), sa+2, sa+25), width=dp(4))
+                    Color(1, 1, 1, 0.05 + 0.02*math.sin(self._t))
+                Ellipse(pos=(cx-r, cy-r), size=(r*2, r*2))
+
+                # Ring
+                if act:
+                    Color(0, 0.9*(1-lv), 1*(1-lv)+lv*0.1, 0.8)
+                else:
+                    Color(0.16, 0.16, 0.24, 1)
+                Line(circle=(cx, cy, r), width=dp(2))
+
+                # Level arc
+                if act and lv > 0.02:
+                    Color(0, 0.9*(1-lv), 1*(1-lv), 0.9)
+                    Line(circle=(cx, cy, r+dp(6), 90, 90+lv*360), width=dp(3))
+
+                # 8 segments (reduced from 12 for performance)
+                for i in range(8):
+                    sa = i * 45
+                    sl = (i+1) / 8
+                    if act and lv >= sl:
+                        if sl > 0.75: Color(1, 0.1, 0.25, 0.8)
+                        elif sl > 0.5: Color(1, 0.7, 0, 0.7)
+                        else: Color(0, 0.9, 1, 0.6)
+                    else:
+                        Color(1, 1, 1, 0.03)
+                    Line(circle=(cx, cy, r+dp(14), sa+3, sa+38), width=dp(4))
+        except Exception as e:
+            log(f"VU draw err: {e}")
 
 
-# ══════════════════════════════════════════
-#  MAIN APP
-# ══════════════════════════════════════════
+# ═══════════════════════════════════════════════════════════════
+# MAIN APP
+# ═══════════════════════════════════════════════════════════════
 class DMicApp(App):
 
     def __init__(self, **kw):
-        super().__init__(**kw)
-        self.title = 'D-MIC'
-        self.engine = AudioEngine()
-        self.wakelock = WakeLockMgr()
-        self._streaming = False
-        self._log_lines = []
-        log("DMicApp created")
+        try:
+            super().__init__(**kw)
+            self.title = 'D-MIC'
+            self.engine = AudioEngine()
+            self.wakelock = WakeLockMgr()
+            self._on = False
+            self._logs = []
+            log("DMicApp init OK")
+        except Exception as e:
+            log(f"DMicApp init FAIL: {e}")
+            raise
 
     def build(self):
-        log("build() starting...")
+        log("build() starting")
+        try:
+            return self._build_ui()
+        except Exception as e:
+            log(f"build() FAIL: {e}")
+            with open(_LOG_PATH, 'a') as f:
+                traceback.print_exc(file=f)
+            traceback.print_exc()
+            # Return a minimal error screen
+            root = FloatLayout()
+            root.add_widget(Label(
+                text=f'D-MIC Error:\n{e}\n\nCheck ~/dmic_log.txt',
+                font_size=sp(14), color=[1, 0.3, 0.3, 1],
+                halign='center', valign='middle',
+                size_hint=(0.9, 0.5),
+                pos_hint={'center_x': .5, 'center_y': .5}
+            ))
+            return root
 
-        # Safe window color
+    def _build_ui(self):
+        # Safe window setup
         try:
             if Window is not None:
                 Window.clearcolor = C_BG
-        except: pass
+        except:
+            pass
 
         root = FloatLayout()
 
-        # Background
-        with root.canvas.before:
-            Color(*C_BG)
-            self._bg = Rectangle(size=(500, 900))
+        # BG
         try:
-            if Window is not None:
-                def _resize(*a):
-                    self._bg.size = Window.size
-                Window.bind(size=_resize)
+            with root.canvas.before:
+                Color(*C_BG)
+                self._bg = Rectangle(size=(500, 900))
+            if Window:
+                Window.bind(size=lambda *_: setattr(self._bg, 'size', Window.size))
                 self._bg.size = Window.size
-        except: pass
+        except Exception as e:
+            log(f"BG err: {e}")
 
-        # ── Header ──
+        # Title
         root.add_widget(Label(
-            text='D-MIC', font_size=sp(40), bold=True, color=C_CYAN,
+            text='D-MIC', font_size=sp(38), bold=True, color=C_CYAN,
             size_hint=(1, None), height=dp(50),
             pos_hint={'center_x': .5, 'top': .97}
         ))
         root.add_widget(Label(
-            text='Phone > Laptop Microphone', font_size=sp(11), color=C_MID,
+            text='Phone > Laptop Mic', font_size=sp(11), color=C_MID,
             size_hint=(1, None), height=dp(20),
             pos_hint={'center_x': .5, 'top': .91}
         ))
 
-        # ── VU Meter ──
+        # VU
         self.vu = VUMeter(
-            size_hint=(.7, .25),
-            pos_hint={'center_x': .5, 'center_y': .65}
+            size_hint=(.65, .22),
+            pos_hint={'center_x': .5, 'center_y': .67}
         )
         root.add_widget(self.vu)
 
         self.mic_lbl = Label(
-            text='MIC\nOFF', font_size=sp(22), bold=True,
+            text='MIC\nOFF', font_size=sp(20), bold=True,
             color=C_DIM, halign='center', valign='middle',
-            size_hint=(None, None), size=(dp(100), dp(70)),
-            pos_hint={'center_x': .5, 'center_y': .65}
+            size_hint=(None, None), size=(dp(90), dp(60)),
+            pos_hint={'center_x': .5, 'center_y': .67}
         )
         root.add_widget(self.mic_lbl)
 
-        # ── Status ──
-        self.status = Label(
-            text='Enter server IP and tap STREAM', font_size=sp(11),
-            color=C_DIM, size_hint=(1, None), height=dp(20),
-            pos_hint={'center_x': .5, 'center_y': .50}
+        # Status
+        self.status_lbl = Label(
+            text='Enter server IP and tap STREAM',
+            font_size=sp(11), color=C_DIM,
+            size_hint=(1, None), height=dp(18),
+            pos_hint={'center_x': .5, 'center_y': .53}
         )
-        root.add_widget(self.status)
+        root.add_widget(self.status_lbl)
 
-        # ── On-screen log ──
+        # Log area
         self.log_lbl = Label(
-            text='', font_size=sp(8), color=[1, 1, 1, 0.2],
+            text='', font_size=sp(7), color=[1, 1, 1, 0.2],
             halign='left', valign='top',
-            size_hint=(.92, None), height=dp(48),
-            pos_hint={'center_x': .5, 'center_y': .44}
+            size_hint=(.92, None), height=dp(42),
+            pos_hint={'center_x': .5, 'center_y': .47}
         )
         self.log_lbl.bind(size=self.log_lbl.setter('text_size'))
         root.add_widget(self.log_lbl)
 
-        # ── Input card ──
+        # Card
         card = BoxLayout(
             orientation='vertical', spacing=dp(8),
-            padding=[dp(20), dp(12), dp(20), dp(12)],
-            size_hint=(.88, None), height=dp(130),
-            pos_hint={'center_x': .5, 'center_y': .28}
+            padding=[dp(18), dp(12), dp(18), dp(12)],
+            size_hint=(.88, None), height=dp(125),
+            pos_hint={'center_x': .5, 'center_y': .30}
         )
-        with card.canvas.before:
-            Color(*C_CARD)
-            self._cr = RoundedRectangle(pos=card.pos, size=card.size, radius=[dp(16)])
-            Color(*C_BORDER)
-            self._cb = Line(rounded_rectangle=(*card.pos, *card.size, dp(16)), width=1)
-        card.bind(pos=self._upd_card, size=self._upd_card)
+        try:
+            with card.canvas.before:
+                Color(*C_CARD)
+                self._cr = RoundedRectangle(pos=card.pos, size=card.size, radius=[dp(14)])
+                Color(*C_BORDER)
+                self._cb = Line(rounded_rectangle=(*card.pos, *card.size, dp(14)), width=1)
+            card.bind(pos=self._uc, size=self._uc)
+        except Exception as e:
+            log(f"Card canvas err: {e}")
 
-        # IP row
-        ip_r = BoxLayout(spacing=dp(8), size_hint_y=None, height=dp(48))
-        ip_r.add_widget(Label(
-            text='IP', font_size=sp(14), bold=True,
-            color=C_CYAN, size_hint_x=None, width=dp(32)
-        ))
+        # IP
+        ipr = BoxLayout(spacing=dp(8), size_hint_y=None, height=dp(46))
+        ipr.add_widget(Label(text='IP', font_size=sp(13), bold=True,
+                             color=C_CYAN, size_hint_x=None, width=dp(30)))
         self.ip_in = TextInput(
-            hint_text='192.168.X.X', multiline=False, font_size=sp(16),
+            hint_text='192.168.X.X', multiline=False, font_size=sp(15),
             background_color=[.04, .04, .06, 1], foreground_color=C_WHITE,
             hint_text_color=C_DIM, cursor_color=C_CYAN,
-            padding=[dp(12)]*4
+            padding=[dp(10)]*4
         )
-        ip_r.add_widget(self.ip_in)
-        card.add_widget(ip_r)
+        ipr.add_widget(self.ip_in)
+        card.add_widget(ipr)
 
-        # Port row
-        pt_r = BoxLayout(spacing=dp(8), size_hint_y=None, height=dp(38))
-        pt_r.add_widget(Label(
-            text='PORT', font_size=sp(11), bold=True,
-            color=C_MID, size_hint_x=None, width=dp(42)
-        ))
+        # Port
+        ptr = BoxLayout(spacing=dp(8), size_hint_y=None, height=dp(36))
+        ptr.add_widget(Label(text='PORT', font_size=sp(10), bold=True,
+                             color=C_MID, size_hint_x=None, width=dp(40)))
         self.port_in = TextInput(
-            text='50005', multiline=False, font_size=sp(14),
-            background_color=[.04, .04, .06, 1], foreground_color=[1, 1, 1, .7],
+            text='50005', multiline=False, font_size=sp(13),
+            background_color=[.04, .04, .06, 1], foreground_color=[1, 1, 1, .6],
             hint_text_color=C_DIM, cursor_color=C_PURPLE,
-            padding=[dp(10)]*4, input_filter='int'
+            padding=[dp(8)]*4, input_filter='int'
         )
-        pt_r.add_widget(self.port_in)
-        card.add_widget(pt_r)
+        ptr.add_widget(self.port_in)
+        card.add_widget(ptr)
         root.add_widget(card)
 
-        # ── Stream button ──
+        # Button
         self.btn = Button(
             text='STREAM', font_size=sp(18), bold=True,
-            size_hint=(.88, None), height=dp(54),
-            pos_hint={'center_x': .5, 'center_y': .11},
+            size_hint=(.88, None), height=dp(52),
+            pos_hint={'center_x': .5, 'center_y': .12},
             background_normal='', background_color=[0, 0, 0, 0],
             color=[0, 0, 0, 1]
         )
-        with self.btn.canvas.before:
-            Color(*C_CYAN)
-            self._br = RoundedRectangle(
-                pos=self.btn.pos, size=self.btn.size, radius=[dp(14)]
-            )
-        self.btn.bind(pos=self._upd_btn, size=self._upd_btn)
-        self.btn.bind(on_release=self._on_btn)
+        try:
+            with self.btn.canvas.before:
+                Color(*C_CYAN)
+                self._br = RoundedRectangle(
+                    pos=self.btn.pos, size=self.btn.size, radius=[dp(14)])
+            self.btn.bind(pos=self._ub, size=self._ub)
+        except Exception as e:
+            log(f"Btn canvas err: {e}")
+            self.btn.background_color = C_CYAN
+
+        self.btn.bind(on_release=self._btn_tap)
         root.add_widget(self.btn)
 
-        # ── Footer ──
+        # Footer
         root.add_widget(Label(
             text='Developed by Soham', font_size=sp(9),
-            color=[1, 1, 1, .12], size_hint=(1, None), height=dp(16),
+            color=[1, 1, 1, .1], size_hint=(1, None), height=dp(14),
             pos_hint={'center_x': .5, 'y': .01}
         ))
 
-        # ── Periodic VU update ──
-        Clock.schedule_interval(self._tick, 1/20)
+        # Tick
+        Clock.schedule_interval(self._tick, 1/15)
 
-        log("build() complete ✓")
-        self._ui_log("Ready. Make sure mic permission is enabled.")
+        log("build() OK ✓")
+        self._ui_log("Ready")
         return root
 
-    # ── UI log (thread-safe) ──
-    @mainthread
-    def _ui_log(self, msg):
-        log(msg)
-        self._log_lines.append(msg)
-        self._log_lines = self._log_lines[-4:]
+    # ── Helpers ──
+    def _uc(self, w, *_):
         try:
-            self.log_lbl.text = '\n'.join(self._log_lines)
+            self._cr.pos = w.pos; self._cr.size = w.size
+            self._cb.rounded_rectangle = (*w.pos, *w.size, dp(14))
         except: pass
 
-    # ── Layout updates ──
-    def _upd_card(self, w, *_):
-        self._cr.pos = w.pos; self._cr.size = w.size
-        self._cb.rounded_rectangle = (*w.pos, *w.size, dp(16))
-
-    def _upd_btn(self, w, *_):
-        self._br.pos = w.pos; self._br.size = w.size
-
-    # ── VU tick (runs on main thread) ──
-    def _tick(self, dt):
-        lv = self.engine.vu_level
-        self.vu.level = lv
-        self.vu.active = self._streaming
-        if self._streaming:
-            self.mic_lbl.text = f'MIC\n{int(lv * 100)}%'
-            self.mic_lbl.color = C_CYAN if lv < 0.7 else C_RED
-
-    # ── Button handler ──
-    def _on_btn(self, *args):
-        log(f"BUTTON PRESSED | streaming={self._streaming}")
-        self._ui_log("Button pressed")
+    def _ub(self, w, *_):
         try:
-            if self._streaming:
-                self._do_stop()
+            self._br.pos = w.pos; self._br.size = w.size
+        except: pass
+
+    def _ui_log(self, msg):
+        log(msg)
+        self._logs.append(msg)
+        self._logs = self._logs[-4:]
+        try:
+            self.log_lbl.text = '\n'.join(self._logs)
+        except: pass
+
+    def _set_status(self, txt, col):
+        try:
+            self.status_lbl.text = txt
+            self.status_lbl.color = col
+        except: pass
+
+    def _tick(self, dt):
+        try:
+            lv = self.engine.vu_level
+            self.vu.level = lv
+            self.vu.active = self._on
+            if self._on:
+                self.mic_lbl.text = f'MIC\n{int(lv*100)}%'
+                self.mic_lbl.color = C_CYAN if lv < 0.7 else C_RED
+        except: pass
+
+    # ── Button ──
+    def _btn_tap(self, *a):
+        log("★ BUTTON TAP ★")
+        self._ui_log("Button tapped")
+        try:
+            if self._on:
+                self._stop()
             else:
-                self._do_start()
+                self._start()
         except Exception as e:
-            log(f"Button error: {e}")
+            log(f"BTN ERROR: {e}")
             traceback.print_exc()
             self._ui_log(f"Error: {e}")
 
-    def _do_start(self):
+    def _start(self):
         ip = self.ip_in.text.strip()
-        port_s = self.port_in.text.strip() or '50005'
-        port = int(port_s)
-
-        log(f"_do_start: ip={ip} port={port}")
+        port = int(self.port_in.text.strip() or '50005')
+        log(f"START: {ip}:{port}")
 
         if not ip:
-            self._set_status('Enter server IP!', C_RED)
-            self._ui_log("No IP entered")
+            self._set_status('Enter IP!', C_RED)
+            self._ui_log("No IP")
             return
 
-        # Check permission first
+        # Permission check
         if IS_ANDROID:
+            self._ui_log("Checking mic permission...")
             ok = check_mic_permission()
             if not ok:
-                self._set_status('Mic permission DENIED!', C_RED)
-                self._ui_log("Go to Settings > Apps > Pydroid 3")
+                self._set_status('Mic DENIED! Enable in Settings', C_RED)
+                self._ui_log("Settings > Apps > Pydroid 3")
                 self._ui_log("> Permissions > Microphone > Allow")
                 return
 
-        self._ui_log(f"Connecting to {ip}:{port}...")
-        self._set_status(f'Starting...', C_ORANGE)
+        self._ui_log(f"Connecting {ip}:{port}...")
 
-        # Start everything
-        self.wakelock.acquire()
+        try:
+            self.wakelock.acquire()
+        except: pass
+
         self.engine.start(ip, port)
-        self._streaming = True
+        self._on = True
 
         self._set_status(f'Streaming to {ip}:{port}', C_GREEN)
         self.btn.text = 'STOP'
-        self._set_btn_color(C_RED)
-        self._ui_log("Streaming started!")
+        self._set_btn_col(C_RED)
+        self._ui_log("Streaming!")
 
-    def _do_stop(self):
-        log("_do_stop()")
+    def _stop(self):
+        log("STOP")
         self._ui_log("Stopping...")
         self.engine.stop()
-        self.wakelock.release()
-        self._streaming = False
+        try: self.wakelock.release()
+        except: pass
+        self._on = False
         self._set_status('Stopped', C_DIM)
         self.btn.text = 'STREAM'
         self.mic_lbl.text = 'MIC\nOFF'
         self.mic_lbl.color = C_DIM
-        self._set_btn_color(C_CYAN)
+        self._set_btn_col(C_CYAN)
         self._ui_log("Stopped")
 
-    @mainthread
-    def _set_status(self, text, color):
-        self.status.text = text
-        self.status.color = color
-
-    def _set_btn_color(self, c):
-        self.btn.canvas.before.clear()
-        with self.btn.canvas.before:
-            Color(*c)
-            self._br = RoundedRectangle(
-                pos=self.btn.pos, size=self.btn.size, radius=[dp(14)]
-            )
+    def _set_btn_col(self, c):
+        try:
+            self.btn.canvas.before.clear()
+            with self.btn.canvas.before:
+                Color(*c)
+                self._br = RoundedRectangle(
+                    pos=self.btn.pos, size=self.btn.size, radius=[dp(14)])
+        except:
+            self.btn.background_color = c
 
     def on_stop(self):
-        log("App closing")
-        try: self._do_stop()
+        try: self._stop()
         except: pass
 
 
-# ══════════════════════════════════════════
-log("Creating DMicApp...")
-if __name__ == '__main__':
-    DMicApp().run()
+# ═══════════════════════════════════════════════════════════════
+# RUN
+# ═══════════════════════════════════════════════════════════════
+log("Creating app instance...")
+try:
+    if __name__ == '__main__':
+        DMicApp().run()
+except Exception as e:
+    log(f"APP CRASHED: {e}")
+    try:
+        with open(_LOG_PATH, 'a') as f:
+            traceback.print_exc(file=f)
+    except: pass
+    traceback.print_exc()
+finally:
+    log("App exited")
