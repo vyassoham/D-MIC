@@ -120,6 +120,7 @@ class AndroidAudioEngine:
                 self.sample_rate, CHANNEL_IN_MONO, ENCODING_PCM_16BIT
             )
             buf_size = max(min_buf, self.buffer_size)
+            print(f"[D-MIC] Buffer size: {buf_size}, min: {min_buf}")
 
             # Create AudioRecord
             recorder = AudioRecord(
@@ -130,8 +131,11 @@ class AndroidAudioEngine:
                 buf_size
             )
 
-            if recorder.getState() != AudioRecord.STATE_INITIALIZED:
-                print("[D-MIC] AudioRecord failed to initialize")
+            state = recorder.getState()
+            print(f"[D-MIC] AudioRecord state: {state} (need {AudioRecord.STATE_INITIALIZED})")
+
+            if state != AudioRecord.STATE_INITIALIZED:
+                print("[D-MIC] AudioRecord failed to initialize!")
                 self.is_recording = False
                 return
 
@@ -139,31 +143,34 @@ class AndroidAudioEngine:
             sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
             addr = (server_ip, server_port)
 
+            # Use short array for reading (works best with jnius)
+            num_shorts = self.buffer_size // 2  # 1024 shorts = 2048 bytes
+            
             # Start recording
             recorder.startRecording()
             print(f"[D-MIC] Streaming to {server_ip}:{server_port}")
 
-            # Read buffer (Java byte array)
-            JArray = autoclass('java.lang.reflect.Array')
-            buffer = bytearray(self.buffer_size)
-
             while self.is_recording:
                 try:
-                    # Read audio into byte array
-                    bytes_read = recorder.read(buffer, 0, len(buffer))
-                    if bytes_read > 0:
+                    # Read into a fresh Python list via short array
+                    # Use the short[] overload of AudioRecord.read()
+                    short_buf = [0] * num_shorts
+                    shorts_read = recorder.read(short_buf, 0, num_shorts)
+                    
+                    if shorts_read > 0:
+                        # Convert shorts to bytes for UDP
+                        data = struct.pack(f'<{shorts_read}h', *short_buf[:shorts_read])
+                        
                         # Send via UDP
-                        sock.sendto(bytes(buffer[:bytes_read]), addr)
+                        sock.sendto(data, addr)
 
-                        # Calculate VU level (RMS of PCM16)
-                        rms_sum = 0
-                        sample_count = bytes_read // 2
-                        for i in range(0, bytes_read - 1, 2):
-                            sample = struct.unpack_from('<h', buffer, i)[0]
-                            rms_sum += sample * sample
-                        if sample_count > 0:
-                            rms = math.sqrt(rms_sum / sample_count)
-                            self.vu_level = min(1.0, rms / 16384.0)
+                        # Calculate VU level (RMS)
+                        rms_sum = sum(s * s for s in short_buf[:shorts_read])
+                        rms = math.sqrt(rms_sum / shorts_read)
+                        self.vu_level = min(1.0, rms / 16384.0)
+                    elif shorts_read < 0:
+                        print(f"[D-MIC] Read error code: {shorts_read}")
+                        time.sleep(0.01)
                 except Exception as e:
                     print(f"[D-MIC] Stream error: {e}")
                     time.sleep(0.01)
@@ -176,6 +183,8 @@ class AndroidAudioEngine:
 
         except Exception as e:
             print(f"[D-MIC] Audio engine error: {e}")
+            import traceback
+            traceback.print_exc()
             self.is_recording = False
 
     def _mock_capture(self, server_ip, server_port):
