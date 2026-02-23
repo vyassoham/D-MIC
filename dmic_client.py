@@ -33,7 +33,10 @@ except ImportError:
 # KIVY SETUP (must be before any kivy import)
 # ============================================================
 os.environ['KIVY_AUDIO'] = 'sdl2'
-os.environ.setdefault('KIVY_GL_BACKEND', 'angle_sdl2')
+# Only use ANGLE on Windows; Android uses native OpenGL ES
+import platform
+if platform.system() == 'Windows':
+    os.environ.setdefault('KIVY_GL_BACKEND', 'angle_sdl2')
 
 from kivy.app import App
 from kivy.uix.boxlayout import BoxLayout
