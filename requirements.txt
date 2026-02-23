@@ -1,0 +1,4 @@
+sounddevice
+numpy
+kivy
+pyinstaller
