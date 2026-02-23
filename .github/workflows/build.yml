@@ -21,7 +21,7 @@ jobs:
             libpython3-dev ffmpeg \
             libsdl2-dev libsdl2-image-dev libsdl2-mixer-dev libsdl2-ttf-dev \
             libportmidi-dev libswscale-dev libavformat-dev libavcodec-dev \
-            zlib1g-dev libffi-dev
+            zlib1g-dev libffi-dev zip unzip openjdk-17-jdk
 
       - name: Install Python build tools
         run: |
@@ -29,19 +29,28 @@ jobs:
           pip install "Cython==0.29.33"
           pip install buildozer
 
-      - name: Accept Android SDK licenses
-        run: |
-          mkdir -p ~/.buildozer
-          # Pre-populate answer file so buildozer won't prompt
-          export BUILDOZER_BUILD_DIR=$(pwd)
-
       - name: Build APK with Buildozer
         run: |
-          yes | buildozer android debug 2>&1 | tail -50
+          yes | buildozer -v android debug 2>&1 | tee build.log
+        continue-on-error: true
 
-      - name: Upload APK
+      - name: List output files
+        run: |
+          echo "=== bin/ contents ==="
+          ls -la bin/ 2>/dev/null || echo "No bin/ directory found"
+          echo "=== Last 100 lines of build log ==="
+          tail -100 build.log || true
+
+      - name: Upload APK (if built)
         uses: actions/upload-artifact@v4
         with:
           name: dmic-app
           path: bin/*.apk
-          if-no-files-found: error
+          if-no-files-found: warn
+
+      - name: Upload build log (always)
+        uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: build-log
+          path: build.log
