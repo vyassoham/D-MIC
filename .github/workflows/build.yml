@@ -3,18 +3,45 @@ on: [push, pull_request]
 
 jobs:
   build:
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-22.04
+
     steps:
       - uses: actions/checkout@v4
-      
-      - name: Build with Buildozer
-        uses: kivy/buildozer-action@v1
+
+      - name: Set up Python 3.10
+        uses: actions/setup-python@v5
         with:
-          workdir: .
-          buildozer_version: master
+          python-version: '3.10'
+
+      - name: Install system dependencies
+        run: |
+          sudo apt-get update -y
+          sudo apt-get install -y \
+            python3-pip build-essential git \
+            libpython3-dev ffmpeg \
+            libsdl2-dev libsdl2-image-dev libsdl2-mixer-dev libsdl2-ttf-dev \
+            libportmidi-dev libswscale-dev libavformat-dev libavcodec-dev \
+            zlib1g-dev libffi-dev
+
+      - name: Install Python build tools
+        run: |
+          pip install --upgrade pip
+          pip install "Cython==0.29.33"
+          pip install buildozer
+
+      - name: Accept Android SDK licenses
+        run: |
+          mkdir -p ~/.buildozer
+          # Pre-populate answer file so buildozer won't prompt
+          export BUILDOZER_BUILD_DIR=$(pwd)
+
+      - name: Build APK with Buildozer
+        run: |
+          yes | buildozer android debug 2>&1 | tail -50
 
       - name: Upload APK
         uses: actions/upload-artifact@v4
         with:
           name: dmic-app
           path: bin/*.apk
+          if-no-files-found: error
