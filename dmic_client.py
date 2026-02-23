@@ -300,23 +300,70 @@ class AndroidService:
 
 
 # ============================================================
-# PERMISSION HANDLER
+# PERMISSION HANDLER (uses jnius directly for Pydroid 3)
 # ============================================================
 def request_mic_permission():
     if not IS_ANDROID:
         return True
     try:
-        from android.permissions import request_permissions, Permission, check_permission
-        if not check_permission(Permission.RECORD_AUDIO):
-            request_permissions([
-                Permission.RECORD_AUDIO,
-                Permission.INTERNET,
-                Permission.WAKE_LOCK
-            ])
-            time.sleep(1)  # Wait for user response
-        return check_permission(Permission.RECORD_AUDIO)
+        ActivityCompat = autoclass('androidx.core.app.ActivityCompat')
+        PackageManager = autoclass('android.content.pm.PackageManager')
+        Manifest = autoclass('android.Manifest$permission')
+
+        # Check if already granted
+        result = ActivityCompat.checkSelfPermission(
+            mActivity, Manifest.RECORD_AUDIO
+        )
+        if result == PackageManager.PERMISSION_GRANTED:
+            print("[D-MIC] Mic permission already granted")
+            return True
+
+        # Request permission
+        print("[D-MIC] Requesting mic permission...")
+        permissions = [Manifest.RECORD_AUDIO]
+
+        # Convert to Java String array
+        String = autoclass('java.lang.String')
+        arr = autoclass('java.lang.reflect.Array')
+        java_arr = arr.newInstance(String, len(permissions))
+        for i, perm in enumerate(permissions):
+            arr.set(java_arr, i, perm)
+
+        ActivityCompat.requestPermissions(mActivity, java_arr, 1001)
+
+        # Wait for user to grant (poll for up to 10 seconds)
+        for _ in range(20):
+            time.sleep(0.5)
+            result = ActivityCompat.checkSelfPermission(
+                mActivity, Manifest.RECORD_AUDIO
+            )
+            if result == PackageManager.PERMISSION_GRANTED:
+                print("[D-MIC] Mic permission granted!")
+                return True
+
+        print("[D-MIC] Mic permission denied after waiting")
+        return False
+
     except Exception as e:
         print(f"[D-MIC] Permission error: {e}")
+        # Fallback: try without androidx (older devices)
+        try:
+            ContextCompat = autoclass('android.support.v4.content.ContextCompat')
+            pm_result = ContextCompat.checkSelfPermission(
+                mActivity, 'android.permission.RECORD_AUDIO'
+            )
+            return pm_result == 0  # PERMISSION_GRANTED = 0
+        except:
+            pass
+        # Last resort: try direct activity method
+        try:
+            mActivity.requestPermissions(
+                ['android.permission.RECORD_AUDIO'], 1001
+            )
+            time.sleep(2)
+            return True  # hope for the best
+        except:
+            pass
         return False
 
 
