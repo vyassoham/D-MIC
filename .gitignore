@@ -1,0 +1,8 @@
+__pycache__/
+*.pyc
+build/
+bin/
+.buildozer/
+server.exe
+*.spec
+server.spec
